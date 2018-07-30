@@ -8,6 +8,4 @@ The framework also support KPTI enabled kernel.
 
 ## Usage
 
-since the code is quite easy, I think you guy can simply find how to use this code by justing reading the source code.
-
-BTW, there is a qemu environment in this repo. just upack and run it.
+Since the code is quite easy, I think you guy can simply find how to use this code by justing reading the source code.
