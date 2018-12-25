@@ -32,10 +32,16 @@
 void *syscall_table;
 void *syscall_table_backup;
 int sys_found = 0;
+void *(g_ret_addr[65537]);
+void *(g_syscall_num[65537]);
+
+void print_addr(void* addr){
+    dbg_info("addr = %lx\n",(void*)addr);
+}
 int make_rw(void* address) {
     unsigned int level;
     pte_t *pte = lookup_address((long unsigned int)address, &level);
-    printk(KERN_INFO "pte <%p>\n", pte);
+    printk(KERN_INFO "pte <%lx>\n", pte);
 
     if (!pte) { /* NULL pointer error. */
         return 1;
@@ -55,7 +61,7 @@ int make_ro(void* address) {
         return 1;
     }
 
-    printk(KERN_INFO "pte <%p>\n", pte);
+    printk(KERN_INFO "pte <%lx>\n", pte);
 
     pte->pte &= ~_PAGE_RW;
 
@@ -165,32 +171,48 @@ static int find_sys_call_table (char *kern_ver) {
 
     return 0;
 }
-int do_something(int syscall_num){
+int do_something_pre(void){
     //do something here
     	
-    dbg_info("Catch syscall: %d", syscall_num);
+    dbg_info("pre syscall: %d ", g_syscall_num[current->pid]);
+    print_addr(g_ret_addr[current->pid]);
     return 0;    
 }
-
-asmlinkage void syscall_springboard(void){
-    SPRING_BOARD
+int do_something_post(void){
+    //do something here
+    dbg_info("post syscall: %d ", g_syscall_num[current->pid]);
+    print_addr(g_ret_addr[current->pid]);
+    return 0;    
+}
+asmlinkage void syscall_landingboard(void){
+    LANDING_BOARD
 }
 
-asmlinkage void syscall_loader(void){
+
+asmlinkage void postsyscall_hook(void){
+    int e;
+    HOOK_START_POSTSYSCALL
+    e = do_something_post();
+    HOOK_END_POSTSYSCALL
+}
+asmlinkage void presyscall_hook(void){
     int syscall_num;
     int e;
     //char *s;
     void* syscall_addr;
-    HOOK_START
+    void* ret_addr;
 
+    HOOK_START_PRESYSCALL
+    g_ret_addr[current->pid]=ret_addr;
+    g_syscall_num[current->pid]=syscall_num;
     //printk(KERN_ALERT "%d\n",syscall_num);
     //dbg_info("Catch syscall: %d", syscall_num);
-    e = do_something(syscall_num);
+    e = do_something_pre();
     //s = get_proc_path();
     //printk("%s\n", s);
     //e = collect(syscall_num);
 
-    HOOK_END
+    HOOK_END_PRESYSCALL
     
 }
 
@@ -199,8 +221,9 @@ asmlinkage void syscall_loader(void){
 static int __init syscall_hook_init(void) {
     char *kern_ver;
     char *buf;
-    void* springboard;
-    int i;
+    int i,tmp;
+    unsigned entry_index[SYSCALL_MAX];
+
 
     buf = kmalloc(MAX_LEN, GFP_KERNEL);
     if ( buf == NULL ) {
@@ -225,7 +248,7 @@ static int __init syscall_hook_init(void) {
     }
 
     sys_found = 0;
-    printk(KERN_ALERT "syscall table found: %p\n", syscall_table);
+    printk(KERN_ALERT "syscall table found: %lx\n", syscall_table);
 
     make_rw(syscall_table);
 
@@ -233,15 +256,15 @@ static int __init syscall_hook_init(void) {
 
     memcpy(syscall_table_backup, syscall_table, SYSCALL_MAX*sizeof(void*));
 
-    springboard = (void*) syscall_springboard;
-    springboard += 0x9;
-    printk(KERN_INFO "springboard at <%p>", springboard);
-
+    tmp=0;
+    for(i = 0 ; tmp < SYSCALL_MAX; i++){
+        if(!memcmp((char *)syscall_landingboard+i,"\x90\x90\x90\x90",4)){
+            entry_index[tmp++] = i + 4;
+            i += 4;
+        }
+    }
     for (i = 0; i < SYSCALL_MAX; i++) {
-        if (i<=0x80)
-            ((void **)syscall_table)[i] = (void *)(springboard+i*0x10);
-        else
-            ((void **)syscall_table)[i] = (void *)(springboard+0x800+0x13*(i-0x80));
+        ((void **)syscall_table)[i] = (void *)((char *)syscall_landingboard+entry_index[i]);
     }
     make_ro(syscall_table);
     printk(KERN_INFO "syscall hooked");
