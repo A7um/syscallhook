@@ -19,29 +19,24 @@
 #include <linux/version.h>
 #include <linux/syscalls.h>
 #include <linux/slab.h>
-
 #include <linux/dcache.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
 #include <linux/seq_file.h>
 #include <asm/mmu.h>
 #include <linux/list.h>
-
 #include "debug.h"
 
 void *syscall_table;
 void *syscall_table_backup;
 int sys_found = 0;
 void *(g_ret_addr[65537]);
-void *(g_syscall_num[65537]);
+int g_syscall_num[65537];
 
-void print_addr(void* addr){
-    dbg_info("addr = %lx\n",(void*)addr);
-}
 int make_rw(void* address) {
     unsigned int level;
     pte_t *pte = lookup_address((long unsigned int)address, &level);
-    printk(KERN_INFO "pte <%lx>\n", pte);
+    dbg_info("pte <%lx>\n", (unsigned long)pte);
 
     if (!pte) { /* NULL pointer error. */
         return 1;
@@ -61,7 +56,7 @@ int make_ro(void* address) {
         return 1;
     }
 
-    printk(KERN_INFO "pte <%lx>\n", pte);
+    dbg_info("pte <%lx>\n", (unsigned long)pte);
 
     pte->pte &= ~_PAGE_RW;
 
@@ -127,7 +122,7 @@ static int find_sys_call_table (char *kern_ver) {
     filename = KALLSYMS;
 #endif
 
-    printk(KERN_ALERT "\nPath %s\n", filename);
+    dbg_info("\nPath %s\n", filename);
 
     f = filp_open(filename, O_RDONLY, 0);
 
@@ -173,15 +168,12 @@ static int find_sys_call_table (char *kern_ver) {
 }
 int do_something_pre(void){
     //do something here
-    	
-    dbg_info("pre syscall: %d ", g_syscall_num[current->pid]);
-    print_addr(g_ret_addr[current->pid]);
+    dbg_info("pre-syscall: %d ", g_syscall_num[current->pid]);
     return 0;    
 }
 int do_something_post(void){
     //do something here
-    dbg_info("post syscall: %d ", g_syscall_num[current->pid]);
-    print_addr(g_ret_addr[current->pid]);
+    dbg_info("post-syscall: %d ", g_syscall_num[current->pid]);
     return 0;    
 }
 asmlinkage void syscall_landingboard(void){
@@ -198,20 +190,12 @@ asmlinkage void postsyscall_hook(void){
 asmlinkage void presyscall_hook(void){
     int syscall_num;
     int e;
-    //char *s;
     void* syscall_addr;
     void* ret_addr;
-
     HOOK_START_PRESYSCALL
     g_ret_addr[current->pid]=ret_addr;
     g_syscall_num[current->pid]=syscall_num;
-    //printk(KERN_ALERT "%d\n",syscall_num);
-    //dbg_info("Catch syscall: %d", syscall_num);
     e = do_something_pre();
-    //s = get_proc_path();
-    //printk("%s\n", s);
-    //e = collect(syscall_num);
-
     HOOK_END_PRESYSCALL
     
 }
@@ -231,7 +215,7 @@ static int __init syscall_hook_init(void) {
         return -1;
     }
 
-    printk(KERN_ALERT "prepare hooking\n");
+    dbg_info("prepare hooking\n");
 
     kern_ver = search_file(buf);
 
@@ -240,7 +224,7 @@ static int __init syscall_hook_init(void) {
         return -1;
     }
 
-    printk(KERN_ALERT "kernel version found: %s\n", kern_ver);
+    dbg_info("kernel version found: %s\n", kern_ver);
 
     if ( find_sys_call_table(kern_ver) == -1 ) {
         sys_found = 1;
@@ -248,7 +232,7 @@ static int __init syscall_hook_init(void) {
     }
 
     sys_found = 0;
-    printk(KERN_ALERT "syscall table found: %lx\n", syscall_table);
+    dbg_info("syscall table found: %lx\n", (unsigned long)syscall_table);
 
     make_rw(syscall_table);
 
@@ -267,7 +251,7 @@ static int __init syscall_hook_init(void) {
         ((void **)syscall_table)[i] = (void *)((char *)syscall_landingboard+entry_index[i]);
     }
     make_ro(syscall_table);
-    printk(KERN_INFO "syscall hooked");
+    dbg_info("syscall hooked");
     kfree(buf);
     return 0;
 }
@@ -278,12 +262,12 @@ static void __exit syscall_hook_exit(void) {
     if ( sys_found == 0 ) {
         make_rw(syscall_table);
         memcpy(syscall_table, syscall_table_backup, SYSCALL_MAX*sizeof(void*));
-        printk(KERN_INFO "syscall table restored.");
+        dbg_info("syscall table restored.");
         kfree(syscall_table_backup);
-        printk(KERN_INFO "backup syscall table freed.");
+        dbg_info("backup syscall table freed.");
         make_ro(syscall_table);
     }
-    printk(KERN_ALERT "\nsyscall unhooked\n");
+    dbg_info("\nsyscall unhooked\n");
     return;
 }
 

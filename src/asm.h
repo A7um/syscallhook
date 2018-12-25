@@ -1,6 +1,5 @@
 
 #define PROC_V          "/proc/version"
-//#define BOOT_PATH       "/boot/System.map-"
 #define KALLSYMS        "/proc/kallsyms"
 
 #define MAX_LEN         (256)
@@ -15,7 +14,8 @@
     "push %0\n\t"\
     "lea presyscall_hook, %%rax\n\t"\
     "add $33, %%rax\n\t"\
-    "jmp *%%rax\n\t"\
+    "push %%rax\n\t"\
+    "ret\n\t"\
     :\
     :"i"(x)\
     :\

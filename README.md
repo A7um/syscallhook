@@ -2,7 +2,7 @@
 
 ## How it works
 
-The framework hook system call by rewriting system call table(for presyscall hooking) and return address of system call(for post hooking).
+The framework hook system call by rewriting system call table(for pre-syscall hooking) and return address of system call(for post-syscall hooking).
 
 The framework is well tested unber ubuntu, imagine that the newest commit is made under the newest ubuntu18.04 with this system call hook framework installed
 

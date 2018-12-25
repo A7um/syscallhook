@@ -10,4 +10,4 @@ moduels_install:
 	$(MAKE) -C $(KERNELDR) M=$(PWD) modules_install  
 
 clean:  
-	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions
+	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions *.symvers *.o.ur-detected *.order *.mk
