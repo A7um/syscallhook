@@ -1,5 +1,7 @@
 #include "asm.h"
 #include <linux/init.h>
+#include <linux/miscdevice.h>  
+#include <linux/ioctl.h>  
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
@@ -26,12 +28,15 @@
 #include <asm/mmu.h>
 #include <linux/list.h>
 #include "debug.h"
-
+#define SCHK_MAGIC_NUMBER 's'
+#define SCHK_ENABLE_HOOK _IOW(SCHK_MAGIC_NUMBER,0,pid_t)
+#define SCHK_DISABLE_HOOK _IOW(SCHK_MAGIC_NUMBER,1,pid_t)
 void *syscall_table;
 void *syscall_table_backup;
 int sys_found = 0;
 void *(g_ret_addr[65537]);
 int g_syscall_num[65537];
+int g_schk_enable[65537];
 
 int make_rw(void* address) {
     unsigned int level;
@@ -182,27 +187,28 @@ asmlinkage void syscall_landingboard(void){
 
 
 asmlinkage void postsyscall_hook(void){
-    int e;
     HOOK_START_POSTSYSCALL
-    e = do_something_post();
+    if(g_schk_enable[current->pid]){
+        do_something_post();
+    }
     HOOK_END_POSTSYSCALL
 }
 asmlinkage void presyscall_hook(void){
     int syscall_num;
-    int e;
     void* syscall_addr;
     void* ret_addr;
     HOOK_START_PRESYSCALL
     g_ret_addr[current->pid]=ret_addr;
     g_syscall_num[current->pid]=syscall_num;
-    e = do_something_pre();
+    if(g_schk_enable[current->pid]){
+        do_something_pre();
+    }
     HOOK_END_PRESYSCALL
     
 }
 
+static int install_hook(void){
 
-
-static int __init syscall_hook_init(void) {
     char *kern_ver;
     char *buf;
     int i,tmp;
@@ -257,8 +263,69 @@ static int __init syscall_hook_init(void) {
 }
 
 
-static void __exit syscall_hook_exit(void) {
+static long schk_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)  
+{  
+    pid_t pid=0;
+    switch(cmd){
+        case SCHK_ENABLE_HOOK:
+            copy_from_user(&pid,(void*)arg,sizeof(pid_t));
+            if(pid>65536)
+                return EINVAL;
+            g_schk_enable[pid]=1;
+            dbg_info("syscall hook enabled at pid %d",pid);
+            break;
+        case SCHK_DISABLE_HOOK:
+            copy_from_user(&pid,(void*)arg,sizeof(pid_t));
+            if(pid>65536)
+                return EINVAL;
+            g_schk_enable[pid]=0;
+            dbg_info("syscall hook disabled at pid %d",pid);
 
+            break;
+    }
+    return 0;  
+}  
+  
+static int schk_open(struct inode *inode, struct file *filp)  
+{  
+    return 0;  
+}  
+static int schk_release(struct inode *inode, struct file *filp)  
+{  
+    return 0;  
+}  
+  
+static struct file_operations schk_fops = {
+
+    .owner = THIS_MODULE,
+    .unlocked_ioctl = schk_ioctl,
+    .open = schk_open,
+    .release = schk_release
+};
+static struct miscdevice schk = {
+    .minor = MISC_DYNAMIC_MINOR,
+    .name = "schk",
+    .fops = &schk_fops,
+};
+
+static int __init syscall_hook_init(void) {
+    int retval;
+    retval = misc_register(&schk);
+    if(retval)
+        return retval;
+    dbg_info("schk reigistered, minor %i\n",schk.minor);
+    retval = install_hook(); 
+    if(retval){
+        misc_deregister(&schk);
+        return retval;
+    }  
+    return 0;
+
+}
+
+
+static void __exit syscall_hook_exit(void) {
+    misc_deregister(&schk);
     if ( sys_found == 0 ) {
         make_rw(syscall_table);
         memcpy(syscall_table, syscall_table_backup, SYSCALL_MAX*sizeof(void*));
