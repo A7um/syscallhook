@@ -1,4 +1,3 @@
-#include "asm.h"
 #include <linux/init.h>
 #include <linux/miscdevice.h>  
 #include <linux/ioctl.h>  
@@ -27,19 +26,20 @@
 #include <linux/seq_file.h>
 #include <asm/mmu.h>
 #include <linux/list.h>
+#include "asm.h"
 #include "debug.h"
-#define SCHK_MAGIC_NUMBER 's'
-#define SCHK_ENABLE_HOOK _IOW(SCHK_MAGIC_NUMBER,0,pid_t)
-#define SCHK_DISABLE_HOOK _IOW(SCHK_MAGIC_NUMBER,1,pid_t)
+#include "schk_ioctl.h"
+
 void *syscall_table;
 void *syscall_table_backup;
 int sys_found = 0;
 void *(g_ret_addr[65537]);
 int g_syscall_num[65537];
 unsigned long g_syscall_argv[65537][7];
-int g_schk_enable[65537];
+int g_schk_flag[65537];
 unsigned long g_retval[65537];
-
+void* presyscall_hook_addr;
+void* postsyscall_hook_addr;
 int make_rw(void* address) {
 	unsigned int level;
 	pte_t *pte = lookup_address((long unsigned int)address, &level);
@@ -181,7 +181,7 @@ int do_something_enable(pid_t pid){
 int do_something_disable(pid_t pid){
 	//do something here
     dbg_info("syscall hook disabled at pid %d",pid);
-    return 0;
+	return 0;
 }
 int do_something_pre(void){
 	//do something here
@@ -191,6 +191,22 @@ int do_something_pre(void){
 int do_something_post(void){
 	//do something here
 	dbg_info("post-syscall: %d ", g_syscall_num[current->pid]);
+	if((g_syscall_num[current->pid]==__NR_exit || g_syscall_num[current->pid]==__NR_exit)){
+		g_schk_flag[current->pid]=0;
+		do_something_disable(current->pid);
+	}
+	else if((g_syscall_num[current->pid]==__NR_fork || g_syscall_num[current->pid]==__NR_vfork|| g_syscall_num[current->pid]==__NR_clone)){
+		if((int)g_retval[current->pid]>0&&g_schk_flag[current->pid]&SCHK_FLAG_INHERIT){
+			g_schk_flag[g_retval[current->pid]]|=SCHK_FLAG_ENABLE;
+			g_schk_flag[g_retval[current->pid]]|=SCHK_FLAG_INHERIT;
+			do_something_enable(g_retval[current->pid]);
+		}
+	}
+	else if((g_syscall_num[current->pid]==__NR_execve&&g_schk_flag[current->pid]&SCHK_FLAG_ENABLE_ON_EXEC)){
+		g_schk_flag[current->pid]|=SCHK_FLAG_ENABLE;
+		do_something_enable(g_retval[current->pid]);
+
+	}
 	return 0;    
 }
 asmlinkage void syscall_landingboard(void){
@@ -199,11 +215,14 @@ asmlinkage void syscall_landingboard(void){
 
 asmlinkage void postsyscall_hook(void){
 	unsigned long retval;
+	void* ret_addr;
 	HOOK_START_POSTSYSCALL
 		g_retval[current->pid]=retval;
-	if(g_schk_enable[current->pid]){
+	if(g_schk_flag[current->pid]){
 		do_something_post();
 	}
+	ret_addr=g_ret_addr[current->pid];
+	g_ret_addr[current->pid]=0;
 	HOOK_END_POSTSYSCALL
 }
 asmlinkage void presyscall_hook(void){
@@ -213,9 +232,10 @@ asmlinkage void presyscall_hook(void){
 	unsigned long syscall_argv[7];
 	HOOK_START_PRESYSCALL
 		memcpy(g_syscall_argv[current->pid],syscall_argv,sizeof(syscall_argv));
-	g_ret_addr[current->pid]=ret_addr;
-	g_syscall_num[current->pid]=syscall_num;
-	if(g_schk_enable[current->pid]){
+	if(g_schk_flag[current->pid]){
+		g_ret_addr[current->pid]=ret_addr;
+		g_syscall_num[current->pid]=syscall_num;
+		ret_addr=postsyscall_hook_addr;
 		do_something_pre();
 	}
 	HOOK_END_PRESYSCALL
@@ -271,6 +291,14 @@ static int install_hook(void){
 	for (i = 0; i < SYSCALL_MAX; i++) {
 		((void **)syscall_table)[i] = (void *)((char *)syscall_landingboard+entry_index[i]);
 	}
+
+	presyscall_hook_addr=presyscall_hook;
+	postsyscall_hook_addr=postsyscall_hook;
+	while(memcmp(presyscall_hook_addr,"\x90\x90\x90\x90",4)) presyscall_hook_addr=(char*)presyscall_hook_addr+4;
+	while(memcmp(postsyscall_hook_addr,"\x90\x90\x90\x90",4)) postsyscall_hook_addr=(char*)postsyscall_hook_addr+4;
+	dbg_info("presyscall_hook_addr = %lx %lx" ,(unsigned long)presyscall_hook_addr,(unsigned long)presyscall_hook);
+	dbg_info("postsyscall_hook_addr = %lx %lx" ,(unsigned long)postsyscall_hook_addr,(unsigned long)postsyscall_hook);
+
 	make_ro(syscall_table);
 	dbg_info("syscall hooked");
 	kfree(buf);
@@ -280,23 +308,36 @@ static int install_hook(void){
 
 static long schk_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)  
 {  
+	unsigned long long config=0;
+	unsigned long long flag=0;
 	pid_t pid=0;
+	
 	switch(cmd){
-		case SCHK_ENABLE_HOOK:
-			copy_from_user(&pid,(void*)arg,sizeof(pid_t));
+		case SCHK_CMD_SET_FLAG:
+			copy_from_user(&config,(void*)arg,sizeof(unsigned long long));
+			pid=config&0xffff;
+			flag=config>>16;
 			if(pid>65536)
 				return EINVAL;
-			g_schk_enable[pid]=1;
-            do_something_enable(pid);
+			if((g_schk_flag[pid]&1)==0&&(flag&1)){
+            	g_schk_flag[pid]=flag;
+				do_something_enable(pid);
+			}
+			else if((g_schk_flag[pid]&1)&&(flag&1==0)){
+				g_schk_flag[pid]=flag;
+				do_something_disable(pid);
+			}
 			break;
-		case SCHK_DISABLE_HOOK:
-			copy_from_user(&pid,(void*)arg,sizeof(pid_t));
+		case SCHK_CMD_GET_FLAG:
+			copy_from_user(&config,(void*)arg,sizeof(unsigned long long));
+			pid=config&0xffff;
 			if(pid>65536)
 				return EINVAL;
-			g_schk_enable[pid]=0;
-            do_something_disable(pid);
-
+			config=(g_schk_flag[pid]<<16|pid);
+			copy_to_user((void*)arg,&config,sizeof(unsigned long long));
 			break;
+		default:
+			dbg_err("unknown ioctl command");
 	}
 	return 0;  
 }  
