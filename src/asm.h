@@ -12,8 +12,7 @@
 			"nop\n\t"\
 			"nop\n\t"\
 			"push %0\n\t"\
-			"lea presyscall_hook, %%rax\n\t"\
-			"add $33, %%rax\n\t"\
+			"movq (presyscall_hook_addr), %%rax\n\t"\
 			"push %%rax\n\t"\
 			"ret\n\t"\
 			:\
@@ -355,9 +354,6 @@
 			"mov %%rax,%0\n\t"\
 			"mov 0xa8(%%rsp),%%rax\n\t"\
 			"mov %%rax,%1\n\t"\
-			"lea postsyscall_hook, %%rax\n\t"\
-			"add $32, %%rax\n\t"\
-			"mov %%rax, 0xa8(%%rsp)\n\t"\
 			"push %%rbx\n\t"\
 			"push %%rcx\n\t"\
 			"push %%rdx\n\t"\
@@ -401,11 +397,13 @@
 			"pop %%rbx\n\t"\
 			"xor %%rax, %%rax\n\t"\
 			"mov %0, %%rax\n\t"\
+			"mov %%rax, 0xa8(%%rsp)\n\t"\
+			"mov %1, %%rax\n\t"\
 			"mov %%rbp, %%rsp\n\t"\
 			"pop %%rbp\n\t"\
 			"jmp *%%rax\n\t"\
 			:\
-			:"m"(syscall_addr)\
+			:"m"(ret_addr),"m"(syscall_addr)\
 			);
 #define HOOK_START_POSTSYSCALL \
 	__asm__ __volatile__ (\
@@ -466,5 +464,5 @@
 			"pop %%rbp\n\t"\
 			"ret\n\t"\
 			:\
-			:"m"(g_ret_addr[current->pid])\
+			:"m"(ret_addr)\
 			);

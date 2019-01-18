@@ -3,9 +3,108 @@
 #include<fcntl.h>
 #include<unistd.h>
 #include<stdlib.h>
-#define SCHK_MAGIC_NUMBER 's'
-#define SCHK_ENABLE_HOOK _IOW(SCHK_MAGIC_NUMBER,0,pid_t)
-#define SCHK_DISABLE_HOOK _IOW(SCHK_MAGIC_NUMBER,1,pid_t)
+#include <pthread.h>
+
+#include<string.h>
+#include "schk_ioctl.h"
+
+
+#if defined(__i386__)
+
+static __inline__ unsigned long long rdtsc(void)
+{
+	unsigned long long int x;
+	__asm__ volatile (".byte 0x0f, 0x31" : "=A" (x));
+	return x;
+}
+#elif defined(__x86_64__)
+
+
+static __inline__ unsigned long long rdtsc(void)
+{
+	unsigned hi, lo;
+	__asm__ __volatile__ ("rdtsc" : "=a"(lo), "=d"(hi));
+	return ( (unsigned long long)lo)|( ((unsigned long long)hi)<<32 );
+}
+
+#elif defined(__powerpc__)
+
+
+static __inline__ unsigned long long rdtsc(void)
+{
+	unsigned long long int result=0;
+	unsigned long int upper, lower,tmp;
+	__asm__ volatile(
+			"0:                  \n"
+			"\tmftbu   %0           \n"
+			"\tmftb    %1           \n"
+			"\tmftbu   %2           \n"
+			"\tcmpw    %2,%0        \n"
+			"\tbne     0b         \n"
+			: "=r"(upper),"=r"(lower),"=r"(tmp)
+			);
+	result = upper;
+	result = result<<32;
+	result = result|lower;
+
+	return(result);
+}
+
+#endif
+int has_debugger() 
+{
+    char buff1[24], buff2[16];
+    FILE* f;
+ 
+    snprintf(buff1, 24, "/proc/%d/status", getppid());
+    f = fopen(buff1, "r");
+    // the first line in status is name
+    fgets(buff2, 16, f);
+    fclose(f);
+ 
+    int has_gdb = (strstr(buff2, "gdb") || strstr(buff2, "rr") || strstr(buff2, "strace"));
+    if (has_gdb == 0) {
+        printf("no debugger is attached\n");
+    } else {
+        printf("debugger attached!\n");
+    }
+    return has_gdb;
+}
+
+void * print_a(void *a){
+    char buf[100];
+
+    int fr=open("/dev/urandom",O_RDONLY);
+    read(fr,buf,100);
+    close(fr);
+	for(int i = 0;i < 10; i++){
+
+		if(has_debugger())
+			puts("thread_a: debugger found");
+		else
+			puts("thread_a: good job");
+		printf("thread_a: time = %llx\n",rdtsc());
+	}
+	return NULL;
+
+}
+
+// 线程B 方法
+void * print_b(void *b){
+    char buf[100];
+    int fr=open("/dev/urandom",O_RDONLY);
+    read(fr,buf,100);
+    close(fr);
+	for(int i=0;i<10;i++){
+
+		if(has_debugger())
+			puts("thread_b: debugger found");
+		else
+			puts("thread_b: good job");
+		printf("thread_b time = %llx\n",rdtsc());
+	}
+	return NULL;
+}
 int main(){
     char buf[100];
     int fd=open("/dev/schk",O_RDONLY);
@@ -13,13 +112,47 @@ int main(){
         perror("open");
     int pid=getpid();
     printf("%d %d\n",fd,pid);
-
-    if(ioctl(fd,SCHK_ENABLE_HOOK,&pid))
+    unsigned long long config=(SCHK_FLAG_INHERIT|SCHK_FLAG_ENABLE)<<16 | pid;
+    if(ioctl(fd,SCHK_CMD_SET_FLAG,&config))
         perror("ioctl1");
     int fr=open("/dev/urandom",O_RDONLY);
     read(fr,buf,100);
+
+	pthread_t t0;
+	pthread_t t1;
+//	cpu_set_t set;
+//	CPU_SET(0,&set);
+//	if (sched_setaffinity(getpid(), sizeof(set), &set) == -1)
+//		perror("sched_setaffinity");
+//
+	// 创建线程A
+	if(pthread_create(&t0, NULL, print_a, NULL) == -1){
+		puts("fail to create pthread t0");
+		exit(1);
+	}
+
+	if(pthread_create(&t1, NULL, print_b, NULL) == -1){
+		puts("fail to create pthread t1");
+		exit(1);
+	}
+
+	// 等待线程结束
+	void * result;
+	if(pthread_join(t0, &result) == -1){
+		puts("fail to recollect t0");
+		exit(1);
+	}
+
+	if(pthread_join(t1, &result) == -1){
+		puts("fail to recollect t1");
+		exit(1);
+	}
+
+
+
     puts("hello world");
-    if(ioctl(fd,SCHK_DISABLE_HOOK,&pid))
+    config=pid;
+    if(ioctl(fd,SCHK_CMD_SET_FLAG,&config))
         perror("ioctl2");
     return 0;
 }
